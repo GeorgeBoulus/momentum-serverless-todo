@@ -1,0 +1,88 @@
+openapi: 3.0.3
+info:
+  title: Momentum API
+  version: 1.0.0
+  description: >
+    REST API of the Momentum platform (design specification). It can be imported into API Gateway;
+    the Lambda integrations, usage plan, caching and request validation are attached at deployment.
+servers:
+  - url: https://{domain}/api
+    variables:
+      domain: {default: momentum.example.com}
+security:
+  - cognito: []
+paths:
+  /tasks:
+    get:
+      summary: List my tasks
+      responses: {"200": {description: OK}, "401": {description: Missing or invalid token}}
+    post:
+      summary: Create a task
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: "#/components/schemas/NewTask"}}}
+      responses: {"201": {description: Created}, "400": {description: Validation error}}
+  /tasks/{id}:
+    parameters: [{$ref: "#/components/parameters/TaskId"}]
+    put:
+      summary: Edit title or estimate (not allowed once done)
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: "#/components/schemas/NewTask"}}}
+      responses: {"200": {description: Updated}, "409": {description: Wrong state}}
+    delete:
+      summary: Delete a task
+      responses: {"200": {description: Deleted}, "409": {description: Not found}}
+  /tasks/{id}/start:
+    parameters: [{$ref: "#/components/parameters/TaskId"}]
+    post:
+      summary: Start working (records startedAt)
+      responses: {"200": {description: Started}, "409": {description: Task is not in todo state}}
+  /tasks/{id}/complete:
+    parameters: [{$ref: "#/components/parameters/TaskId"}]
+    post:
+      summary: Finish the task (records actual duration and score eligibility)
+      responses: {"200": {description: Completed}, "409": {description: Task is not in progress}}
+  /tasks/{id}/proof-url:
+    parameters: [{$ref: "#/components/parameters/TaskId"}]
+    post:
+      summary: Get a 5-minute pre-signed POST to upload one proof photo (JPEG, up to 5 MB)
+      responses: {"200": {description: Upload URL and form fields}, "409": {description: Not allowed now}}
+  /leaderboard:
+    get:
+      summary: Top 5 of a week (cached 60 s)
+      parameters: [{name: week, in: query, schema: {type: string, pattern: '^\d{4}-W\d{2}$'}}]
+      responses: {"200": {description: OK}}
+  /leaderboard/me:
+    get:
+      summary: My points and rank (not cached)
+      parameters: [{name: week, in: query, schema: {type: string, pattern: '^\d{4}-W\d{2}$'}}]
+      responses: {"200": {description: OK}}
+  /rewards:
+    get:
+      summary: Reward catalog (cached 300 s)
+      responses: {"200": {description: OK}}
+  /awards/me:
+    get:
+      summary: My awards
+      responses: {"200": {description: OK}}
+components:
+  securitySchemes:
+    cognito:
+      type: apiKey
+      name: Authorization
+      in: header
+      x-amazon-apigateway-authtype: cognito_user_pools
+  parameters:
+    TaskId:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+  schemas:
+    NewTask:
+      type: object
+      required: [title, estimateMin]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 120}
+        estimateMin: {type: integer, minimum: 1, maximum: 480}
