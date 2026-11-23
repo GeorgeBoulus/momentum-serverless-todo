@@ -72,7 +72,9 @@ def update_task(user, task_id, body):
 
 def delete_task(user, task_id):
     table.delete_item(Key={"userId": user, "taskId": task_id},
-                      ConditionExpression="attribute_exists(taskId)")
+                      ConditionExpression="attribute_exists(taskId) AND #s <> :done",
+                      ExpressionAttributeNames={"#s": "status"},
+                      ExpressionAttributeValues={":done": "done"})   # completed tasks count toward the daily cap
     return respond(200, {"deleted": task_id})
 
 
