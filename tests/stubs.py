@@ -13,6 +13,9 @@ class ClientError(Exception):
 
 
 class _Any:
+    def __init__(self, *a, **k):
+        pass
+
     def __getattr__(self, name):
         return _Any()
 
