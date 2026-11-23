@@ -1,11 +1,16 @@
 # Momentum: a gamified, serverless to-do platform
 
 **AWS Solutions Architect Associate (SAA-C03) graduation project, Project 3: Serverless REST API with Cognito Auth, DynamoDB and WAF**
+
 **Author:** George Boulus
 
 Momentum is a to-do application that rewards **consistency and honesty**, not just volume. Users complete tasks, optionally attach a proof photo, earn points, and compete on a weekly leaderboard. The top 5 each week receive rewards. The whole backend is serverless and built around the services listed in the Project 3 brief, plus a few extensions that solve real problems of a competitive app (cheating, privacy, weekly automation).
 
 > **Project status:** this repository documents the **solution architecture design**. The infrastructure is not deployed, and a live deployment is optional for this program. The code in `src/` is a reference implementation that shows how each function would work. Its logic is covered by offline unit tests (`tests/`, standard library only, boto3 replaced by small stand-ins), and the React frontend in `frontend/` builds and was exercised against a mock API. Nothing has been run against a live AWS account.
+
+![Solution architecture](architecture.png)
+
+**Where things are:** design and diagram in this README (sections 2 to 14), reference Lambda code in `src/`, API spec in `docs/openapi.yaml`, offline unit tests in `tests/`, a React frontend in `frontend/`. Nothing is deployed.
 
 ---
 
