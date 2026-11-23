@@ -46,8 +46,18 @@ def _validated(body):
 
 
 def list_tasks(user):
-    res = table.query(KeyConditionExpression=Key("userId").eq(user))
-    return respond(200, res["Items"])
+    """Newest first through the userId-createdAt-index, following pagination."""
+    items, start = [], None
+    while True:
+        kwargs = {"IndexName": "userId-createdAt-index",
+                  "KeyConditionExpression": Key("userId").eq(user), "ScanIndexForward": False}
+        if start:
+            kwargs["ExclusiveStartKey"] = start
+        res = table.query(**kwargs)
+        items.extend(res["Items"])
+        start = res.get("LastEvaluatedKey")
+        if not start:
+            return respond(200, items)
 
 
 def create_task(user, name, body):
@@ -118,6 +128,8 @@ def lambda_handler(event, context):
     task_id = (event.get("pathParameters") or {}).get("id")
     try:
         body = json.loads(event.get("body") or "{}")
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
         if route == ("GET", "/tasks"):
             return list_tasks(user)
         if route == ("POST", "/tasks"):
