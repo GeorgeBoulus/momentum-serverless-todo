@@ -30,6 +30,15 @@ def verify(bucket, key):
         print("Skipping unexpected key", key)
         return
     _, user, task_id, _ = parts
+    task = ddb.get_item(TableName=TASKS, Key={"userId": {"S": user}, "taskId": {"S": task_id}},
+                        ConsistentRead=True).get("Item")
+    if not task:   # task deleted: nothing to attach the photo to
+        s3.delete_object(Bucket=bucket, Key=key)
+        return
+    current = task.get("proofKey", {}).get("S")
+    if current and current != key:   # a different photo is already approved: keep it, drop this one
+        s3.delete_object(Bucket=bucket, Key=key)
+        return
     data = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
     digest = hashlib.sha256(data).hexdigest()
     status, reason, labels = "approved", None, []
@@ -64,7 +73,7 @@ def verify(bucket, key):
                 status, reason = "rejected", "duplicate"
 
     names = {"#p": "proofStatus"}
-    values = {":s": {"S": status}}
+    values = {":s": {"S": status}, ":k0": {"S": key}}
     expr = "SET #p = :s"
     if status == "approved":
         expr += ", proofKey = :k, proofLabels = :l"
@@ -76,7 +85,8 @@ def verify(bucket, key):
     try:
         ddb.update_item(TableName=TASKS, Key={"userId": {"S": user}, "taskId": {"S": task_id}},
                         UpdateExpression=expr, ExpressionAttributeNames=names,
-                        ExpressionAttributeValues=values, ConditionExpression="attribute_exists(taskId)")
+                        ExpressionAttributeValues=values,
+                        ConditionExpression="attribute_exists(taskId) AND (attribute_not_exists(proofKey) OR proofKey = :k0)")
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
