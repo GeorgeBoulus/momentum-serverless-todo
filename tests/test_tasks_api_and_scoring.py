@@ -32,6 +32,37 @@ class DeleteGuardTests(unittest.TestCase):
         self.assertEqual(self._run("in_progress"), 200)
 
 
+class BodyValidationTests(unittest.TestCase):
+    def _post(self, body):
+        ta.table = FakeTable("todo")
+        event = {"requestContext": {"authorizer": {"claims": {"sub": "u1"}}},
+                 "httpMethod": "POST", "resource": "/tasks", "body": body}
+        return ta.lambda_handler(event, None)["statusCode"]
+
+    def test_non_object_and_invalid_json_give_400(self):
+        for body in ("[1, 2]", "42", "null", '"text"', "{not json"):
+            self.assertEqual(self._post(body), 400, body)
+
+
+class ListTasksTests(unittest.TestCase):
+    def test_lists_newest_first_through_the_index_and_follows_pages(self):
+        calls = []
+
+        class T:
+            def query(self, **kw):
+                calls.append(kw)
+                if "ExclusiveStartKey" not in kw:
+                    return {"Items": [{"taskId": "new"}], "LastEvaluatedKey": {"k": 1}}
+                return {"Items": [{"taskId": "old"}]}
+
+        ta.table = T()
+        res = ta.list_tasks("u1")
+        self.assertEqual(res["statusCode"], 200)
+        self.assertEqual(res["body"], '[{"taskId": "new"}, {"taskId": "old"}]')
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(c["IndexName"] == "userId-createdAt-index" and c["ScanIndexForward"] is False for c in calls))
+
+
 class ScoringTests(unittest.TestCase):
     def test_accuracy_bonus_bands(self):
         self.assertEqual(se.accuracy_bonus(10, 10), 5)
