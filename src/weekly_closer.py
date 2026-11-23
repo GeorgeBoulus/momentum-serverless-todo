@@ -1,14 +1,15 @@
-"""weekly-closer: invoked by EventBridge Scheduler (Sunday 23:59, Africa/Cairo).
+"""weekly-closer: invoked by EventBridge Scheduler (Monday 00:05, Africa/Cairo), just after the week it closes has ended.
 
 Ranks the top 5 of the week, creates one award per winner (idempotent conditional write),
 emails the winners through SES and posts a summary to the ops SNS topic.
 
 Reference implementation (design documentation; not deployed).
-Environment variables: SCORES_TABLE, AWARDS_TABLE, CATALOG_TABLE, USER_POOL_ID, SENDER_EMAIL, OPS_TOPIC_ARN
+Environment variables: SCORES_TABLE, AWARDS_TABLE, CATALOG_TABLE, USER_POOL_ID, SENDER_EMAIL, OPS_TOPIC_ARN, APP_TIMEZONE
 """
 import datetime
 import os
 import time
+from zoneinfo import ZoneInfo
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -23,8 +24,14 @@ ses = boto3.client("ses")
 sns = boto3.client("sns")
 
 
-def current_week():
-    year, week, _ = datetime.datetime.now(datetime.timezone.utc).isocalendar()
+TZ = ZoneInfo(os.environ.get("APP_TIMEZONE", "Africa/Cairo"))   # same timezone as scoring-engine
+
+
+def closing_week(now=None):
+    """The week that just ended. The schedule fires at Monday 00:05 local time, so one hour earlier
+    is still Sunday of the week being closed. An explicit weekId in the event overrides this."""
+    now = now or datetime.datetime.now(TZ)
+    year, week, _ = (now - datetime.timedelta(hours=1)).isocalendar()
     return f"{year}-W{week:02d}"
 
 
@@ -34,7 +41,7 @@ def email_of(sub):
 
 
 def lambda_handler(event, context):
-    week = (event or {}).get("weekId") or current_week()
+    week = (event or {}).get("weekId") or closing_week()
     winners = scores.query(IndexName="weekId-points-index", KeyConditionExpression=Key("weekId").eq(week),
                            ScanIndexForward=False, Limit=5)["Items"]
     summary = []
