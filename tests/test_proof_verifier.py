@@ -11,6 +11,7 @@ KEY = "proofs/u1/t1/abc.jpg"
 class FakeDDB:
     def __init__(self):
         self.hashes, self.updates = {}, []
+        self.task = {"taskId": {"S": "t1"}}   # None means the task was deleted
 
     def put_item(self, TableName, ConditionExpression, Item):
         h = Item["sha256"]["S"]
@@ -19,12 +20,18 @@ class FakeDDB:
         self.hashes[h] = Item
 
     def get_item(self, TableName, Key, ConsistentRead=False):
+        if "taskId" in Key:
+            return {"Item": self.task} if self.task else {}
         item = self.hashes.get(Key["sha256"]["S"])
         return {"Item": item} if item else {}
 
     fail_update_once = False
 
     def update_item(self, **k):
+        cond = k.get("ConditionExpression", "")
+        pk = (self.task or {}).get("proofKey", {}).get("S")
+        if "proofKey = :k0" in cond and pk and pk != k["ExpressionAttributeValues"][":k0"]["S"]:
+            raise ClientError("ConditionalCheckFailedException")
         if self.fail_update_once:
             self.fail_update_once = False
             raise RuntimeError("update failed after hash write")
@@ -107,6 +114,27 @@ class ProofVerifierTests(unittest.TestCase):
         pv.verify("b", KEY)
         self.assertEqual(self.ddb.updates[-1][":r"]["S"], "unsafe_content")
         self.assertEqual(self.ddb.hashes, {})
+
+
+    def test_second_photo_does_not_replace_approved_proof(self):
+        pv.rek = FakeRek()
+        self.ddb.task = {"taskId": {"S": "t1"}, "proofKey": {"S": "proofs/u1/t1/first.jpg"}}
+        pv.verify("b", KEY)
+        self.assertEqual(self.ddb.updates, [])
+        self.assertEqual(self.s3.deleted, [{"Bucket": "b", "Key": KEY}])
+
+    def test_same_key_redelivery_with_existing_proof_is_kept(self):
+        pv.rek = FakeRek()
+        self.ddb.task = {"taskId": {"S": "t1"}, "proofKey": {"S": KEY}}
+        pv.verify("b", KEY)
+        self.assertEqual(self.ddb.updates[-1][":s"]["S"], "approved")
+        self.assertEqual(self.s3.deleted, [])
+
+    def test_photo_for_deleted_task_is_dropped(self):
+        pv.rek = FakeRek()
+        self.ddb.task = None
+        pv.verify("b", KEY)
+        self.assertEqual(self.s3.deleted, [{"Bucket": "b", "Key": KEY}])
 
 
 if __name__ == "__main__":
