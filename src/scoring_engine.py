@@ -6,11 +6,12 @@ The event source mapping uses a filter (status = done), and a second invocation 
 function's own write finds a delta of 0, so it cannot loop.
 
 Reference implementation (design documentation; not deployed).
-Environment variables: TASKS_TABLE, SCORES_TABLE, BASE_POINTS, PROOF_BONUS, DAILY_BONUS
+Environment variables: TASKS_TABLE, SCORES_TABLE, BASE_POINTS, PROOF_BONUS, DAILY_BONUS, APP_TIMEZONE
 """
 import datetime
 import os
 import time
+from zoneinfo import ZoneInfo
 
 import boto3
 from boto3.dynamodb.types import TypeDeserializer
@@ -23,10 +24,11 @@ SCORES = os.environ["SCORES_TABLE"]
 BASE = int(os.environ.get("BASE_POINTS", "10"))
 PROOF_BONUS = int(os.environ.get("PROOF_BONUS", "5"))
 DAILY_BONUS = int(os.environ.get("DAILY_BONUS", "3"))
+TZ = ZoneInfo(os.environ.get("APP_TIMEZONE", "Africa/Cairo"))   # one timezone defines every day and week
 
 
 def week_and_day(ts):
-    d = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
+    d = datetime.datetime.fromtimestamp(ts, TZ)
     year, week, _ = d.isocalendar()
     return f"{year}-W{week:02d}", d.date().isoformat()
 

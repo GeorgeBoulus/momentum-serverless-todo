@@ -1,11 +1,16 @@
 # Momentum: a gamified, serverless to-do platform
 
 **AWS Solutions Architect Associate (SAA-C03) graduation project, Project 3: Serverless REST API with Cognito Auth, DynamoDB and WAF**
+
 **Author:** George Boulus
 
 Momentum is a to-do application that rewards **consistency and honesty**, not just volume. Users complete tasks, optionally attach a proof photo, earn points, and compete on a weekly leaderboard. The top 5 each week receive rewards. The whole backend is serverless and built around the services listed in the Project 3 brief, plus a few extensions that solve real problems of a competitive app (cheating, privacy, weekly automation).
 
-> **Project status:** this repository documents the **solution architecture design**. The infrastructure is not deployed, and a live deployment is optional for this program. The code in `src/` is a reference implementation that shows how each function would work. It has not been run against a live AWS account.
+> **Project status:** this repository documents the **solution architecture design**. The infrastructure is not deployed, and a live deployment is optional for this program. The code in `src/` is a reference implementation that shows how each function would work. Its logic is covered by offline unit tests (`tests/`, standard library only, boto3 replaced by small stand-ins), and the React frontend in `frontend/` builds and was exercised against a mock API. Nothing has been run against a live AWS account.
+
+![Solution architecture](architecture.png)
+
+**Where things are:** design and diagram in this README (sections 2 to 14), reference Lambda code in `src/`, API spec in `docs/openapi.yaml`, offline unit tests in `tests/`, a React frontend in `frontend/`. Nothing is deployed.
 
 ---
 
@@ -21,6 +26,8 @@ Momentum is a to-do application that rewards **consistency and honesty**, not ju
 | Time estimate was accurate (actual within ±20% of estimate) | +5 (within ±50%: +2) |
 | Proof photo approved | +5 |
 | First scored task of the day (consistency) | +3 |
+
+**One clock for everything.** Days (the daily cap and the daily bonus) and weeks (the leaderboard) are all measured in `Africa/Cairo` local time (`APP_TIMEZONE`, which includes Egypt's daylight saving time). A week runs Monday 00:00 to Sunday 24:00 Cairo time.
 
 A task is **eligible** only if it was actually worked on (started, and at least 2 minutes of active time) and the user has not passed the daily cap of 10 scored tasks. Proof photos are checked for duplicates and unsafe content.
 
@@ -76,7 +83,7 @@ A task is **eligible** only if it was actually worked on (started, and at least 
 
 **Flow 5: scoring.** Every change to a completed task appears on the DynamoDB Stream. `scoring-engine` calculates the task's total points and adds only the difference to the user's weekly score, in one DynamoDB transaction, so replays never double-count.
 
-**Flow 6: weekly rewards.** EventBridge Scheduler runs `weekly-closer` every Sunday at 23:59 (Africa/Cairo). It ranks the top 5, writes one award per winner (a conditional write, so re-runs are safe), emails winners through SES, and sends a summary to an SNS topic for operators.
+**Flow 6: weekly rewards.** EventBridge Scheduler runs `weekly-closer` every Monday at 00:05 (Africa/Cairo), just after the week it closes has ended, so completions made late on Sunday are still counted. The closer ranks the week that just ended. It ranks the top 5, writes one award per winner (a conditional write, so re-runs are safe), emails winners through SES, and sends a summary to an SNS topic for operators.
 
 ## 5. AWS services
 
@@ -147,7 +154,7 @@ A task is **eligible** only if it was actually worked on (started, and at least 
 |---|---|---|---|
 | `GET /tasks` | List my tasks | tasks-api | No |
 | `POST /tasks` | Create a task | tasks-api | No |
-| `PUT /tasks/{id}` | Edit title or estimate | tasks-api | No |
+| `PUT /tasks/{id}` | Edit title or estimate (only before the task is started, so the estimate cannot be adjusted to match the real time) | tasks-api | No |
 | `DELETE /tasks/{id}` | Delete a task | tasks-api | No |
 | `POST /tasks/{id}/start` | Start working | tasks-api | No |
 | `POST /tasks/{id}/complete` | Finish the task | tasks-api | No |
@@ -253,7 +260,8 @@ Infrastructure as Code (CloudFormation or AWS SAM) would be the natural next ste
 
 ## 13. Limitations and future work
 
-- The infrastructure is **not deployed**, and the code has **not been executed**. Behavior described here is design intent.
+- The infrastructure is **not deployed**. The Lambda logic has been run only in offline unit tests with stand-ins for AWS, and the frontend only against a mock API. Real behavior of API Gateway, Cognito, WAF, DynamoDB Streams and the other services is design intent until deployed.
+- A task's proof photo is final once approved. A later upload for the same task is discarded.
 - Rekognition cannot confirm that a photo matches a specific task. It only filters unsafe or empty images, so a determined user could still submit unrelated photos. Human review of top-ranked proofs would be a sensible control before awarding real prizes.
 - Rewards are illustrative, and real prizes would need legal terms and sponsor agreements.
 - Future ideas: a regional WAF on the API stage as a second layer, DynamoDB Global Tables for multi-region resilience, personal insights such as "you usually need 1.5x your estimate", and team leaderboards.
@@ -266,11 +274,20 @@ Infrastructure as Code (CloudFormation or AWS SAM) would be the natural next ste
 ├── architecture.png
 ├── docs/
 │   └── openapi.yaml
-└── src/
-    ├── tasks_api.py
-    ├── upload_url.py
-    ├── leaderboard_api.py
-    ├── proof_verifier.py
-    ├── scoring_engine.py
-    └── weekly_closer.py
+├── src/
+│   ├── tasks_api.py
+│   ├── upload_url.py
+│   ├── leaderboard_api.py
+│   ├── proof_verifier.py
+│   ├── scoring_engine.py
+│   └── weekly_closer.py
+├── tests/                  offline unit tests (python -m unittest discover -s tests)
+└── frontend/               React (Vite) single-page app, sign-in through the Cognito hosted UI
+    ├── package.json
+    ├── index.html
+    └── src/main.jsx        sign-in (PKCE), API client and screens
 ```
+
+**Run the tests:** `cd tests && python3 -m unittest discover` (Python 3.9 or newer, no packages to install).
+
+**Build the frontend:** `cd frontend && npm install && npm run build`. Set `VITE_COGNITO_DOMAIN` (the hosted UI domain), `VITE_COGNITO_CLIENT_ID` and optionally `VITE_API_URL` (default `/api`, the CloudFront path that forwards to API Gateway) and `VITE_REDIRECT_URI`. Sign-in uses the authorization code flow with PKCE, the ID token stays in memory, and the API is called with it in the `Authorization` header for the Cognito authorizer. Upload the `dist/` folder to the frontend S3 bucket in deployment step 7.

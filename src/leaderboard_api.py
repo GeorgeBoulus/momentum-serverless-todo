@@ -6,13 +6,14 @@ GET /rewards        reward catalog        (cached 300 s)
 GET /awards/me      the caller's awards   (not cached; per-user)
 
 Reference implementation (design documentation; not deployed).
-Environment variables: SCORES_TABLE, AWARDS_TABLE, CATALOG_TABLE, ALLOWED_ORIGIN
+Environment variables: SCORES_TABLE, AWARDS_TABLE, CATALOG_TABLE, ALLOWED_ORIGIN, APP_TIMEZONE
 """
 import datetime
 import json
 import os
 import re
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -22,6 +23,7 @@ scores = db.Table(os.environ["SCORES_TABLE"])
 awards = db.Table(os.environ["AWARDS_TABLE"])
 catalog = db.Table(os.environ["CATALOG_TABLE"])
 INDEX = "weekId-points-index"
+TZ = ZoneInfo(os.environ.get("APP_TIMEZONE", "Africa/Cairo"))   # same timezone as scoring-engine
 HEADERS = {"Content-Type": "application/json",
            "Access-Control-Allow-Origin": os.environ.get("ALLOWED_ORIGIN", "*")}
 
@@ -37,7 +39,7 @@ def respond(code, body):
 
 
 def current_week():
-    year, week, _ = datetime.datetime.now(datetime.timezone.utc).isocalendar()
+    year, week, _ = datetime.datetime.now(TZ).isocalendar()
     return f"{year}-W{week:02d}"
 
 

@@ -3,13 +3,15 @@
 Reference implementation (design documentation; not deployed).
 Runs behind API Gateway (REST, Lambda proxy) with a Cognito authorizer.
 The user's identity ALWAYS comes from the validated JWT claim "sub".
-Environment variables: TASKS_TABLE, MIN_ACTIVE_MIN, DAILY_SCORED_CAP, ALLOWED_ORIGIN
+Environment variables: TASKS_TABLE, MIN_ACTIVE_MIN, DAILY_SCORED_CAP, ALLOWED_ORIGIN, APP_TIMEZONE
 """
+import datetime
 import json
 import os
 import time
 import uuid
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -17,7 +19,8 @@ from botocore.exceptions import ClientError
 
 table = boto3.resource("dynamodb").Table(os.environ["TASKS_TABLE"])
 MIN_ACTIVE_MIN = int(os.environ.get("MIN_ACTIVE_MIN", "2"))    # anti-farming: minimum real work time
-DAILY_CAP = int(os.environ.get("DAILY_SCORED_CAP", "10"))      # anti-farming: scored tasks per UTC day
+DAILY_CAP = int(os.environ.get("DAILY_SCORED_CAP", "10"))      # anti-farming: scored tasks per local day
+TZ = ZoneInfo(os.environ.get("APP_TIMEZONE", "Africa/Cairo"))     # one timezone defines every day and week
 HEADERS = {"Content-Type": "application/json",
            "Access-Control-Allow-Origin": os.environ.get("ALLOWED_ORIGIN", "*")}
 
@@ -45,9 +48,25 @@ def _validated(body):
     return title, estimate
 
 
+def day_start(ts):
+    """Epoch seconds of 00:00 local time on the day containing ts (handles daylight saving)."""
+    day = datetime.datetime.fromtimestamp(ts, TZ).date()
+    return int(datetime.datetime.combine(day, datetime.time.min, tzinfo=TZ).timestamp())
+
+
 def list_tasks(user):
-    res = table.query(KeyConditionExpression=Key("userId").eq(user))
-    return respond(200, res["Items"])
+    """Newest first through the userId-createdAt-index, following pagination."""
+    items, start = [], None
+    while True:
+        kwargs = {"IndexName": "userId-createdAt-index",
+                  "KeyConditionExpression": Key("userId").eq(user), "ScanIndexForward": False}
+        if start:
+            kwargs["ExclusiveStartKey"] = start
+        res = table.query(**kwargs)
+        items.extend(res["Items"])
+        start = res.get("LastEvaluatedKey")
+        if not start:
+            return respond(200, items)
 
 
 def create_task(user, name, body):
@@ -64,15 +83,17 @@ def update_task(user, task_id, body):
     table.update_item(
         Key={"userId": user, "taskId": task_id},
         UpdateExpression="SET title = :t, estimateMin = :e",
-        ConditionExpression="attribute_exists(taskId) AND #s <> :done",
+        ConditionExpression="#s = :todo",    # the estimate is locked once work starts (accuracy bonus)
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":t": title, ":e": estimate, ":done": "done"})
+        ExpressionAttributeValues={":t": title, ":e": estimate, ":todo": "todo"})
     return respond(200, {"updated": task_id})
 
 
 def delete_task(user, task_id):
     table.delete_item(Key={"userId": user, "taskId": task_id},
-                      ConditionExpression="attribute_exists(taskId)")
+                      ConditionExpression="attribute_exists(taskId) AND #s <> :done",
+                      ExpressionAttributeNames={"#s": "status"},
+                      ExpressionAttributeValues={":done": "done"})   # completed tasks count toward the daily cap
     return respond(200, {"deleted": task_id})
 
 
@@ -92,7 +113,7 @@ def complete_task(user, task_id):
         return respond(409, {"message": "Task must be in progress"})
     now = int(time.time())
     actual = max(1, round((now - int(task["startedAt"])) / 60))
-    midnight = now - now % 86400
+    midnight = day_start(now)
     done_today = table.query(
         IndexName="userId-completedAt-index",
         KeyConditionExpression=Key("userId").eq(user) & Key("completedAt").gte(midnight),
@@ -116,6 +137,8 @@ def lambda_handler(event, context):
     task_id = (event.get("pathParameters") or {}).get("id")
     try:
         body = json.loads(event.get("body") or "{}")
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
         if route == ("GET", "/tasks"):
             return list_tasks(user)
         if route == ("POST", "/tasks"):

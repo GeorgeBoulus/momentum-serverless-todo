@@ -25,14 +25,14 @@ paths:
   /tasks/{id}:
     parameters: [{$ref: "#/components/parameters/TaskId"}]
     put:
-      summary: Edit title or estimate (not allowed once done)
+      summary: Edit title or estimate (only while the task has not been started)
       requestBody:
         required: true
         content: {application/json: {schema: {$ref: "#/components/schemas/NewTask"}}}
-      responses: {"200": {description: Updated}, "409": {description: Wrong state}}
+      responses: {"200": {description: Updated}, "409": {description: Task not found or already started}}
     delete:
       summary: Delete a task
-      responses: {"200": {description: Deleted}, "409": {description: Not found}}
+      responses: {"200": {description: Deleted}, "409": {description: Task not found or already completed}}
   /tasks/{id}/start:
     parameters: [{$ref: "#/components/parameters/TaskId"}]
     post:

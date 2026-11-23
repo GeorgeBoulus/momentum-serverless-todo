@@ -30,31 +30,50 @@ def verify(bucket, key):
         print("Skipping unexpected key", key)
         return
     _, user, task_id, _ = parts
+    task = ddb.get_item(TableName=TASKS, Key={"userId": {"S": user}, "taskId": {"S": task_id}},
+                        ConsistentRead=True).get("Item")
+    if not task:   # task deleted: nothing to attach the photo to
+        s3.delete_object(Bucket=bucket, Key=key)
+        return
+    current = task.get("proofKey", {}).get("S")
+    if current and current != key:   # a different photo is already approved: keep it, drop this one
+        s3.delete_object(Bucket=bucket, Key=key)
+        return
     data = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
     digest = hashlib.sha256(data).hexdigest()
     status, reason, labels = "approved", None, []
 
-    try:   # 1) duplicate photo anywhere in the system
-        ddb.put_item(TableName=HASHES, ConditionExpression="attribute_not_exists(sha256)",
-                     Item={"sha256": {"S": digest}, "userId": {"S": user}, "taskId": {"S": task_id},
-                           "expiresAt": {"N": str(int(time.time()) + HASH_TTL_SECONDS)}})
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        status, reason = "rejected", "duplicate"
+    # 1) unsafe content, 2) real photo. Duplicate check comes LAST so a retry after a transient
+    #    failure (SQS redelivery) never finds its own hash and rejects its own photo.
+    if rek.detect_moderation_labels(Image={"Bytes": data}, MinConfidence=70)["ModerationLabels"]:
+        status, reason = "rejected", "unsafe_content"
 
-    if status == "approved":   # 2) unsafe content
-        if rek.detect_moderation_labels(Image={"Bytes": data}, MinConfidence=70)["ModerationLabels"]:
-            status, reason = "rejected", "unsafe_content"
-
-    if status == "approved":   # 3) must look like a real photo of something
+    if status == "approved":   # must look like a real photo of something
         labels = [l["Name"] for l in rek.detect_labels(
             Image={"Bytes": data}, MaxLabels=8, MinConfidence=75)["Labels"]]
         if not labels:
             status, reason = "rejected", "unrecognizable"
 
+    if status == "approved":   # duplicate photo anywhere in the system
+        try:
+            ddb.put_item(TableName=HASHES, ConditionExpression="attribute_not_exists(sha256)",
+                         Item={"sha256": {"S": digest}, "userId": {"S": user}, "taskId": {"S": task_id},
+                               "photoKey": {"S": key},
+                               "expiresAt": {"N": str(int(time.time()) + HASH_TTL_SECONDS)}})
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            # same photo from a redelivered message is not a duplicate
+            existing = ddb.get_item(TableName=HASHES, Key={"sha256": {"S": digest}}, ConsistentRead=True).get("Item", {})
+            same_upload = existing.get("photoKey", {}).get("S") == key or (
+                "photoKey" not in existing           # legacy row: fall back to same user and task
+                and existing.get("userId", {}).get("S") == user
+                and existing.get("taskId", {}).get("S") == task_id)
+            if not same_upload:
+                status, reason = "rejected", "duplicate"
+
     names = {"#p": "proofStatus"}
-    values = {":s": {"S": status}}
+    values = {":s": {"S": status}, ":k0": {"S": key}}
     expr = "SET #p = :s"
     if status == "approved":
         expr += ", proofKey = :k, proofLabels = :l"
@@ -66,7 +85,8 @@ def verify(bucket, key):
     try:
         ddb.update_item(TableName=TASKS, Key={"userId": {"S": user}, "taskId": {"S": task_id}},
                         UpdateExpression=expr, ExpressionAttributeNames=names,
-                        ExpressionAttributeValues=values, ConditionExpression="attribute_exists(taskId)")
+                        ExpressionAttributeValues=values,
+                        ConditionExpression="attribute_exists(taskId) AND (attribute_not_exists(proofKey) OR proofKey = :k0)")
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
